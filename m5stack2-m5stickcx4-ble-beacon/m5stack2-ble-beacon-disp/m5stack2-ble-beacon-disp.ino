@@ -1,0 +1,204 @@
+// ===== M5Stack Core2: RSSI Viewer =====
+//
+// ・ESP-NOWで4つのアンカーから MAC + RSSI リストを受信
+// ・あらかじめ登録した 2つのビーコンMAC に対して
+//   (ビーコン2) x (アンカー4) のRSSI表を表示
+//
+// ※ ビーコンのBLE MACアドレスを BEACON_MACS に設定してください
+// ※ Wi-Fi MACアドレス(ESP-NOW用) はアンカー側に設定します
+
+#include <M5Core2.h>   // 無印M5Stackの場合は <M5Stack.h> に変更
+#include <WiFi.h>
+#include <esp_now.h>
+
+// ========== 設定 ==========
+
+// ビーコンの BLE MAC アドレス（2個分）
+const uint8_t BEACON_MACS[2][6] = {
+    // 例: F9:5C:BE:E5:99:23
+    { 0xAC, 0x23, 0x3F, 0xAC, 0x66, 0x39 },
+    // 例: C8:91:CC:41:C6:D6
+    { 0xAC, 0x23, 0x3F, 0xAC, 0x6C, 0x9C }
+};
+
+// アンカーの数（ID=1〜4）
+const int NUM_ANCHORS = 4;
+const int NUM_BEACONS = 2;
+
+// データ有効期限（ミリ秒）
+// この時間データが来なければ "--" 表示にする
+const uint32_t DATA_TIMEOUT_MS = 15000;  // 15秒
+
+// ========== 受信データ構造 (アンカー側と合わせる) ==========
+
+typedef struct {
+    uint8_t mac[6];
+    int8_t  rssi;
+} DeviceEntry;
+
+// ========== 表示用テーブル ==========
+//
+// rssiTable[b][a] : b=0..1 (ビーコン), a=0..3 (アンカーID-1)
+// lastUpdate[a]   : アンカーごとの最終更新時刻
+
+int16_t   rssiTable[NUM_BEACONS][NUM_ANCHORS];
+uint32_t  lastUpdate[NUM_ANCHORS];
+
+// ========== ユーティリティ関数 ==========
+
+bool macEquals(const uint8_t *a, const uint8_t *b) {
+    for (int i = 0; i < 6; i++) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+String macToString(const uint8_t *mac) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return String(buf);
+}
+
+void initTable() {
+    for (int b = 0; b < NUM_BEACONS; b++) {
+        for (int a = 0; a < NUM_ANCHORS; a++) {
+            rssiTable[b][a] = -127;  // 無効値
+        }
+    }
+    for (int a = 0; a < NUM_ANCHORS; a++) {
+        lastUpdate[a] = 0;
+    }
+}
+
+// ========== ESP-NOW 受信コールバック ==========
+
+void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+    if (len < 2) {
+        return;
+    }
+    uint8_t anchorId = incomingData[0];
+    uint8_t count    = incomingData[1];
+
+    if (anchorId == 0 || anchorId > NUM_ANCHORS) {
+        // 想定外のID
+        return;
+    }
+    int anchorIndex = anchorId - 1;
+
+    // DeviceEntry 配列へのポインタ
+    const uint8_t *ptr = incomingData + 2;
+    int remaining = len - 2;
+
+    int possibleCount = remaining / sizeof(DeviceEntry);
+    if (count > possibleCount) {
+        count = possibleCount; // 安全側で調整
+    }
+
+    // 受信時刻更新
+    lastUpdate[anchorIndex] = millis();
+
+    // 各デバイスをチェック
+    for (int i = 0; i < count; i++) {
+        const DeviceEntry *dev = (const DeviceEntry *)(ptr + i * sizeof(DeviceEntry));
+
+        // 2つのビーコンMACと比較
+        for (int b = 0; b < NUM_BEACONS; b++) {
+            if (macEquals(dev->mac, BEACON_MACS[b])) {
+                rssiTable[b][anchorIndex] = dev->rssi;
+            }
+        }
+    }
+}
+
+// ========== 画面表示 ==========
+
+void drawTable() {
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setCursor(0, 0);
+
+    M5.Lcd.println("RSSI Viewer");
+    M5.Lcd.println("");
+
+    // ヘッダ行
+    M5.Lcd.print("Bea-Anc ");
+    for (int a = 0; a < NUM_ANCHORS; a++) {
+        M5.Lcd.printf("A%d   ", a + 1);
+    }
+    M5.Lcd.println("");
+
+    uint32_t now = millis();
+
+    for (int b = 0; b < NUM_BEACONS; b++) {
+        // ビーコンMACの短縮表示
+        String macStr = macToString(BEACON_MACS[b]);
+        // 下8文字くらいだけ表示
+        String macShort = macStr.substring(9);
+
+        M5.Lcd.printf("%s ", macShort.c_str());
+
+        for (int a = 0; a < NUM_ANCHORS; a++) {
+            // データ有効性チェック
+            bool valid = (lastUpdate[a] != 0) &&
+                         (now - lastUpdate[a] <= DATA_TIMEOUT_MS);
+
+            if (!valid || rssiTable[b][a] <= -120) {
+                M5.Lcd.print(" -- ");
+            } else {
+                M5.Lcd.printf("%3d ", rssiTable[b][a]);
+            }
+        }
+        M5.Lcd.println("");
+    }
+
+    M5.Lcd.println("");
+    M5.Lcd.println("Data: max RSSI per 5s");
+}
+
+// ========== セットアップ ==========
+
+void setup() {
+    M5.begin();
+    Serial.begin(115200);
+
+    M5.Lcd.setRotation(1);
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.println("RSSI Viewer");
+
+    // Wi-Fi/ESP-NOW 初期化
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+
+    // 自分のWi-Fi MAC（アンカー側設定用）
+    Serial.print("WiFi MAC: ");
+    Serial.println(WiFi.macAddress());
+
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+        return;
+    }
+
+    esp_now_register_recv_cb(onDataRecv);
+
+    initTable();
+}
+
+// ========== ループ ==========
+
+void loop() {
+    static uint32_t lastDraw = 0;
+    uint32_t now = millis();
+
+    // 5秒に1回くらい画面更新
+    if (now - lastDraw > 5000) {
+        lastDraw = now;
+        drawTable();
+    }
+
+    delay(100);
+}
