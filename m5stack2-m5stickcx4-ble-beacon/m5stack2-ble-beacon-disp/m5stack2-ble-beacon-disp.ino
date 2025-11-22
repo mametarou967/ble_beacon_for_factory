@@ -107,10 +107,18 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
         count = possibleCount; // 安全側で調整
     }
 
-    // 受信時刻更新
+    // 受信時刻更新（アンカーの最後のスナップショット時刻）
     lastUpdate[anchorIndex] = millis();
 
-    // 各デバイスをチェック
+    // ★ポイント1:
+    // このアンカーからの今回のスナップショットに合わせて、
+    // まずこのアンカー列の全ビーコン分の値を一度クリアしておく。
+    // → 今回の一覧に含まれないビーコンは "--" 表示になる。
+    for (int b = 0; b < NUM_BEACONS; b++) {
+        rssiTable[b][anchorIndex] = -127;   // 無効値にリセット
+    }
+
+    // 各デバイスをチェック（今回見えているものだけ上書き）
     for (int i = 0; i < count; i++) {
         const DeviceEntry *dev = (const DeviceEntry *)(ptr + i * sizeof(DeviceEntry));
 
@@ -155,11 +163,11 @@ void drawTable() {
         M5.Lcd.printf("%d-%s ", b + 1, macShort.c_str());
 
         for (int a = 0; a < NUM_ANCHORS; a++) {
-            // データ有効性チェック
-            bool valid = (lastUpdate[a] != 0) &&
-                         (now - lastUpdate[a] <= DATA_TIMEOUT_MS);
+            // データ有効性チェック（アンカー自体が生きているか）
+            bool validAnchor = (lastUpdate[a] != 0) &&
+                               (now - lastUpdate[a] <= DATA_TIMEOUT_MS);
 
-            if (!valid || rssiTable[b][a] <= -120) {
+            if (!validAnchor || rssiTable[b][a] <= -120) {
                 M5.Lcd.print(" -- ");
             } else {
                 M5.Lcd.printf("%3d ", rssiTable[b][a]);
@@ -172,10 +180,8 @@ void drawTable() {
     M5.Lcd.println("Data: max RSSI per 5s");
 
     // ==== 画面下端に Wi-Fi MAC を小さく表示 ====
-    // 文字サイズを 1 にして、左下あたりに表示
     M5.Lcd.setTextSize(1);
-    // rotation(1) の時、高さは 240px 前後なので、だいたい 220px 付近に出す
-    int16_t y = 220;
+    int16_t y = 220;   // rotation(1) のときのだいたい下端付近
     M5.Lcd.setCursor(0, y);
     M5.Lcd.print("WiFi: ");
     M5.Lcd.print(g_wifiMacStr);
