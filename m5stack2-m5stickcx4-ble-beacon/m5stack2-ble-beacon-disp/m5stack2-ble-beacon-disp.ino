@@ -15,9 +15,9 @@
 
 // ビーコンの BLE MAC アドレス（2個分）
 const uint8_t BEACON_MACS[2][6] = {
-    // 例: F9:5C:BE:E5:99:23
+    // 例1
     { 0xAC, 0x23, 0x3F, 0xAC, 0x66, 0x39 },
-    // 例: C8:91:CC:41:C6:D6
+    // 例2
     { 0xAC, 0x23, 0x3F, 0xAC, 0x6C, 0x9C }
 };
 
@@ -43,6 +43,9 @@ typedef struct {
 
 int16_t   rssiTable[NUM_BEACONS][NUM_ANCHORS];
 uint32_t  lastUpdate[NUM_ANCHORS];
+
+// 自分の Wi-Fi MAC アドレス（文字列）
+String g_wifiMacStr;
 
 // ========== ユーティリティ関数 ==========
 
@@ -82,8 +85,15 @@ void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
     uint8_t anchorId = incomingData[0];
     uint8_t count    = incomingData[1];
 
+    Serial.print("onDataRecv: anchorId=");
+    Serial.print(anchorId);
+    Serial.print(" len=");
+    Serial.print(len);
+    Serial.print(" count=");
+    Serial.println(count);
+
     if (anchorId == 0 || anchorId > NUM_ANCHORS) {
-        // 想定外のID
+        Serial.println("  -> invalid anchorId, ignored");
         return;
     }
     int anchorIndex = anchorId - 1;
@@ -124,21 +134,25 @@ void drawTable() {
     M5.Lcd.println("");
 
     // ヘッダ行
-    M5.Lcd.print("Bea-Anc ");
+    M5.Lcd.print("Bea-Anc    ");
     for (int a = 0; a < NUM_ANCHORS; a++) {
-        M5.Lcd.printf("A%d   ", a + 1);
+        M5.Lcd.printf("A%d", a + 1);
+        if (a != NUM_ANCHORS - 1) {
+            M5.Lcd.print("  ");
+        }
     }
     M5.Lcd.println("");
+    M5.Lcd.println("-------------------------");
 
     uint32_t now = millis();
 
     for (int b = 0; b < NUM_BEACONS; b++) {
         // ビーコンMACの短縮表示
         String macStr = macToString(BEACON_MACS[b]);
-        // 下8文字くらいだけ表示
+        // 下8文字くらいだけ表示（例: "E5:99:23"）
         String macShort = macStr.substring(9);
 
-        M5.Lcd.printf("%s ", macShort.c_str());
+        M5.Lcd.printf("%d-%s ", b + 1, macShort.c_str());
 
         for (int a = 0; a < NUM_ANCHORS; a++) {
             // データ有効性チェック
@@ -156,6 +170,15 @@ void drawTable() {
 
     M5.Lcd.println("");
     M5.Lcd.println("Data: max RSSI per 5s");
+
+    // ==== 画面下端に Wi-Fi MAC を小さく表示 ====
+    // 文字サイズを 1 にして、左下あたりに表示
+    M5.Lcd.setTextSize(1);
+    // rotation(1) の時、高さは 240px 前後なので、だいたい 220px 付近に出す
+    int16_t y = 220;
+    M5.Lcd.setCursor(0, y);
+    M5.Lcd.print("WiFi: ");
+    M5.Lcd.print(g_wifiMacStr);
 }
 
 // ========== セットアップ ==========
@@ -175,8 +198,9 @@ void setup() {
     WiFi.disconnect();
 
     // 自分のWi-Fi MAC（アンカー側設定用）
+    g_wifiMacStr = WiFi.macAddress();  // 文字列として保存
     Serial.print("WiFi MAC: ");
-    Serial.println(WiFi.macAddress());
+    Serial.println(g_wifiMacStr);
 
     if (esp_now_init() != ESP_OK) {
         Serial.println("Error initializing ESP-NOW");
