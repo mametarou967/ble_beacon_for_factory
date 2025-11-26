@@ -3,9 +3,10 @@
 // ・ESP-NOWで4つのアンカーから MAC + RSSI リストを受信
 // ・あらかじめ登録した 2つのビーコンMAC に対して
 //   (ビーコン2) x (アンカー4) のRSSI表を表示
+//   ＋ 各ビーコンの合計RSSIを下部に表示
 //
 // ※ ビーコンのBLE MACアドレスを BEACON_MACS に設定してください
-// ※ Wi-Fi MACアドレス(ESP-NOW用) はアンカー側に設定します
+// ※ Wi-Fi MACアドレス(ESP-NOW用) はアンカー側を設定します
 
 #include <M5Core2.h>   // 無印M5Stackの場合は <M5Stack.h> に変更
 #include <WiFi.h>
@@ -28,6 +29,10 @@ const int NUM_BEACONS = 2;
 // データ有効期限（ミリ秒）
 // この時間データが来なければ "--" 表示にする
 const uint32_t DATA_TIMEOUT_MS = 15000;  // 15秒
+
+// 合計値計算のときに「見えていないアンカー」として扱うRSSI値
+// （必要に応じて -100, -110, -120 など好みで調整してください）
+const int16_t MISSING_RSSI_VALUE = -100;
 
 // ========== 受信データ構造 (アンカー側と合わせる) ==========
 
@@ -154,6 +159,13 @@ void drawTable() {
 
     uint32_t now = millis();
 
+    // 合計RSSI格納用
+    int32_t beaconSum[NUM_BEACONS];
+    for (int b = 0; b < NUM_BEACONS; b++) {
+        beaconSum[b] = 0;
+    }
+
+    // マトリクス表示＋同時に合計値を計算
     for (int b = 0; b < NUM_BEACONS; b++) {
         // ビーコンMACの短縮表示
         String macStr = macToString(BEACON_MACS[b]);
@@ -167,16 +179,35 @@ void drawTable() {
             bool validAnchor = (lastUpdate[a] != 0) &&
                                (now - lastUpdate[a] <= DATA_TIMEOUT_MS);
 
-            if (!validAnchor || rssiTable[b][a] <= -120) {
+            int16_t val = rssiTable[b][a];
+            int16_t contrib;
+
+            if (!validAnchor || val <= -120) {
+                // 表示は "--"
                 M5.Lcd.print(" -- ");
+                // 合計値用には一定のペナルティ値として加算
+                contrib = MISSING_RSSI_VALUE;
             } else {
-                M5.Lcd.printf("%3d ", rssiTable[b][a]);
+                M5.Lcd.printf("%3d ", val);
+                contrib = val;
             }
+
+            beaconSum[b] += contrib;
         }
         M5.Lcd.println("");
     }
 
     M5.Lcd.println("");
+
+    // ===== ビーコンごとの合計RSSI表示 =====
+    M5.Lcd.println("Beacon total RSSI:");
+    for (int b = 0; b < NUM_BEACONS; b++) {
+        String macStr = macToString(BEACON_MACS[b]);
+        String macShort = macStr.substring(9);
+        // 値が大きい(=0に近い)ほど「全体として近い」イメージ
+        M5.Lcd.printf("B%d(%s): %4ld\n", b + 1, macShort.c_str(), (long)beaconSum[b]);
+    }
+
     M5.Lcd.println("Data: max RSSI per 5s");
 
     // ==== 画面下端に Wi-Fi MAC を小さく表示 ====
